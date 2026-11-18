@@ -265,8 +265,7 @@ fn offer_temporary_ragnarok() {
                     }
                 }
             }
-            TEMP_OWNER.store(0, Ordering::SeqCst);
-            TEMP_SLOT.store(-1, Ordering::SeqCst);
+            clear_temporary_ragnarok("stale temporary slot");
         }
     }
 
