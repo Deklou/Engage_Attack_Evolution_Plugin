@@ -133,6 +133,7 @@ static TEMP_FILLER_SLOT: AtomicI32 = AtomicI32::new(-1);
 // ItemData in the pinned engage 0.6.3 dependency has no index lookup API.
 // Hold the exact static ItemData pointer captured from the vanilla slot.
 static TEMP_FILLER_ITEM: AtomicUsize = AtomicUsize::new(0);
+static SLOT_DIAGNOSTIC_REPORTED: AtomicBool = AtomicBool::new(false);
 
 fn celica_god(unit: &Unit) -> Option<&GodUnit> {
     for god in [unit.god_link, unit.god_unit].into_iter().flatten() {
@@ -326,6 +327,37 @@ fn offer_temporary_ragnarok() {
             println!(
                 "[engage_attack_evolution] no free slot or verified Engage padding; leaving items untouched"
             );
+            // Read-only inventory trace: diagnose the precise eight native
+            // slots before deciding whether any safe picker design is possible.
+            // Never dispose or reassign a slot just for diagnostic purposes.
+            if !SLOT_DIAGNOSTIC_REPORTED.swap(true, Ordering::Relaxed) {
+                for slot in 0..8 {
+                    match unit.item_list.get_item(slot) {
+                        Some(item) => {
+                            let iid = item.item.iid.get_string()
+                                .unwrap_or_else(|_| String::from("<unreadable>"));
+                            println!(
+                                "[engage_attack_evolution] slot audit: slot={} index={} data_index={} iid={} god={} engrave={} flags={} refine={} endurance={}",
+                                slot,
+                                item.index,
+                                item.item.parent.index,
+                                iid,
+                                item.god_unit.is_some(),
+                                item.engrave.is_some(),
+                                item.flags,
+                                item.refine_level,
+                                item.endurance
+                            );
+                        }
+                        None => {
+                            println!(
+                                "[engage_attack_evolution] slot audit: slot={} unavailable",
+                                slot
+                            );
+                        }
+                    }
+                }
+            }
             return;
         }
     }
@@ -419,7 +451,7 @@ fn human_map_dispose(sequence: *mut u8, method: OptionalMethod) {
 #[skyline::main(name = "engage_attack_evolution")]
 pub fn main() {
     skyline::install_hooks!(get_engage_attack, engage_attack_command_ctor, create_bind_target, unit_command_prepare, unit_command_cancel, free_cursor_prepare, human_map_dispose);
-    println!("[engage_attack_evolution] loaded (Engage 2.0.0, Celica level 10; picker native-slot build v5)");
+    println!("[engage_attack_evolution] loaded (Engage 2.0.0, Celica level 10; picker slot-audit build v6)");
 }
 
 #[cfg(test)]
