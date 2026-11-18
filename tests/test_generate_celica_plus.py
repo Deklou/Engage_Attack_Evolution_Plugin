@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
-from generate_celica_plus import BASE, PLUS, ICON, SUFFIXES, generate
+from generate_celica_plus import BASE, PLUS, ICON, SUFFIXES, generate, replace_attr
 
 
 class GenerateTests(unittest.TestCase):
@@ -23,10 +23,15 @@ class GenerateTests(unittest.TestCase):
             # Mirrors the user-authored full-width + root: only one new row,
             # custom translation keys, vanilla references still present.
             root = rows[0]
-            plus_root = root.replace('Sid="' + BASE + '"', 'Sid="' + PLUS + '"')
-            plus_root = plus_root.replace('Name="OLD"', 'Name="CUSTOM_PLUS"')
-            plus_root = plus_root.replace('CommandName="OLD"', 'CommandName="CUSTOM_COMMAND"')
-            plus_root = plus_root.replace('Help="OLD"', 'Help="CUSTOM_HELP"')
+            plus_root = root
+            for key, value in (
+                ("Sid", PLUS),
+                ("Name", "CUSTOM_PLUS"),
+                ("CommandName", "CUSTOM_COMMAND"),
+                ("Help", "CUSTOM_HELP"),
+                ("CommandHelp", "CUSTOM_COMMAND_HELP"),
+            ):
+                plus_root = replace_attr(plus_root, key, value)
             rows.insert(1, plus_root)
         text = header + "".join(rows) + "</Sheet>" + newline + "</Book>" + newline
         return text.encode("utf-8-sig" if with_bom else "utf-8")
@@ -48,6 +53,7 @@ class GenerateTests(unittest.TestCase):
         self.assertEqual(result.count('Sid="' + PLUS + '"'), 1)
         self.assertEqual(result.count('Name="CUSTOM_PLUS"'), 5)
         self.assertEqual(result.count('CommandName="CUSTOM_COMMAND"'), 5)
+        self.assertEqual(result.count('CommandHelp="CUSTOM_COMMAND_HELP"'), 5)
         self.assertEqual(result.count('Help="CUSTOM_HELP"'), 5)
         self.assertEqual(result.count('WeaponProhibit="959"'), 5)
         self.assertIn('Rewarp="12"', result)
