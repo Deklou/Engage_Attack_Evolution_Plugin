@@ -1,8 +1,12 @@
-use core::sync::atomic::{AtomicBool, Ordering};
-use engage::gamedata::{
-    skill::SkillData,
-    unit::{GodUnit, Unit},
-    Gamedata,
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
+use engage::{
+    gamedata::{
+        item::{unititemlist_add, ItemData, UnitItem, UnitItemList},
+        skill::SkillData,
+        unit::{GodUnit, Unit},
+        Gamedata,
+    },
+    mapmind::MapMind,
 };
 use unity::prelude::*;
 
@@ -102,15 +106,196 @@ fn get_engage_attack(
     vanilla
 }
 
+
+// Temporary weapon picker: only activated while opening Warp Ragnarok+'s
+// item selection. Never unlock Ragnarok in GodGrowthData or at Engage start.
+//
+// main_200: UnitItemList.Add, UnitItem.SetEngageWeaponGod(Unit), and
+// UnitItemList.PutEngageItem are native routines. The latter reconstructs the
+// engaged slots from the bond's actual weapons, removing an unearned Ragnarok.
+const CELICA_PLUS_SID: &str = "SID_セリカエンゲージ技＋";
+const CELICA_RAGNAROK_IID: &str = "IID_セリカ_ライナロック";
+const RAGNAROK_UNLOCK_LEVEL: i32 = 15;
+
+#[skyline::from_offset(0x01FB04E0)]
+fn set_engage_weapon_god(item: &UnitItem, unit: &Unit, method: OptionalMethod);
+
+#[skyline::from_offset(0x01FB84C0)]
+fn put_engage_items(
+    items: &UnitItemList,
+    god: &GodUnit,
+    engaged: bool,
+    method: OptionalMethod,
+);
+
+// IL2CPP's Unit references are stable during a map sequence. We retain an
+// owner only until the next menu/cursor transition and clear it on map dispose.
+// We never store the temporary UnitItem itself across a menu transition.
+static TEMP_OWNER: AtomicUsize = AtomicUsize::new(0);
+static TEMP_SLOT: AtomicI32 = AtomicI32::new(-1);
+
+fn celica_god(unit: &Unit) -> Option<&GodUnit> {
+    for god in [unit.god_link, unit.god_unit].into_iter().flatten() {
+        if god.data.gid.get_string().ok().as_deref() == Some("GID_セリカ") {
+            return Some(god);
+        }
+    }
+    None
+}
+
+fn is_celica_plus_skill(skill: &SkillData) -> bool {
+    skill.sid
+        .get_string()
+        .ok()
+        .and_then(|sid| sid.strip_prefix(CELICA_PLUS_SID).map(str::to_owned))
+        .is_some_and(|suffix| CELICA_VARIANTS.contains(&suffix.as_str()))
+}
+
+fn should_offer_temporary_ragnarok(bond: i32, already_present: bool) -> bool {
+    (10..RAGNAROK_UNLOCK_LEVEL).contains(&bond) && !already_present
+}
+
+// Do not touch any non-Celica unit, nor an existing legitimately unlocked
+// Ragnarok. The native sync routine also preserves all other Engage weapons.
+fn clear_temporary_ragnarok(reason: &str) {
+    let owner = TEMP_OWNER.swap(0, Ordering::SeqCst);
+    let slot = TEMP_SLOT.swap(-1, Ordering::SeqCst);
+    if owner == 0 {
+        return;
+    }
+
+    let unit = unsafe { &*(owner as *const Unit) };
+    if let Some(god) = celica_god(unit) {
+        unsafe { put_engage_items(unit.item_list, god, unit.is_engaging(), None) };
+        println!(
+            "[engage_attack_evolution] temporary Ragnarok sync: unit={} slot={} after {}",
+            unit.ident, slot, reason
+        );
+    }
+}
+
+fn offer_temporary_ragnarok(skill: &SkillData) {
+    if !is_celica_plus_skill(skill) {
+        return;
+    }
+    let unit = MapMind::get_unit();
+    if !unit.is_engaging() {
+        return;
+    }
+    let Some(god) = celica_god(unit) else {
+        return;
+    };
+    let bond = unsafe { god_unit_get_level(god, unit, None) };
+    let owned = unit.item_list.has_item_iid(CELICA_RAGNAROK_IID);
+    if !should_offer_temporary_ragnarok(bond, owned) {
+        return;
+    }
+
+    let owner = unit as *const Unit as usize;
+    let existing = TEMP_OWNER.load(Ordering::SeqCst);
+    if existing != 0 {
+        if existing != owner {
+            clear_temporary_ragnarok("unit change");
+        } else {
+            let slot = TEMP_SLOT.load(Ordering::SeqCst);
+            if (0..8).contains(&slot) {
+                if let Some(item) = unit.item_list.get_item(slot) {
+                    if item.item.iid.get_string().ok().as_deref() == Some(CELICA_RAGNAROK_IID) {
+                        return;
+                    }
+                }
+            }
+            TEMP_OWNER.store(0, Ordering::SeqCst);
+            TEMP_SLOT.store(-1, Ordering::SeqCst);
+        }
+    }
+
+    let Some(ragnarok) = ItemData::get(CELICA_RAGNAROK_IID) else {
+        println!("[engage_attack_evolution] Ragnarok IID missing; leaving existing tome choices");
+        return;
+    };
+    // The engine has eight physical slots. When all are full, never evict an
+    // existing item or modify a user's actual inventory to make room.
+    let index = unsafe { unititemlist_add(unit.item_list, ragnarok, None) };
+    if index < 0 {
+        println!("[engage_attack_evolution] no free item slot for temporary Ragnarok");
+        return;
+    }
+    let Some(inserted) = unit.item_list.get_item(index) else {
+        // Defensive rollback if the game returned an inconsistent slot.
+        unsafe { put_engage_items(unit.item_list, god, true, None) };
+        return;
+    };
+    // Native method applies Celica's stored weapon Augments, including
+    // upgrades to stats and skills. Do not create a plain, unaugmented copy.
+    unsafe { set_engage_weapon_god(inserted, unit, None) };
+    TEMP_SLOT.store(index, Ordering::SeqCst);
+    TEMP_OWNER.store(owner, Ordering::SeqCst);
+    println!(
+        "[engage_attack_evolution] temporary augmented Ragnarok available: unit={} bond={} slot={}",
+        unit.ident, bond, index
+    );
+}
+
+// The vanilla UI enumerates the unit's 8 slots, so make Ragnarok available
+// only just before creating Warp Ragnarok+'s attack/weapon selection.
+#[skyline::hook(offset = 0x01DEE3C0)]
+fn create_bind_engage_attack(
+    menu: *mut u8,
+    skill: *const SkillData,
+    method: OptionalMethod,
+) {
+    if let Some(skill) = unsafe { skill.as_ref() } {
+        offer_temporary_ragnarok(skill);
+    }
+    call_original!(menu, skill, method);
+}
+
+// These transitions end the selection/attack flow. Keeping the item until a
+// transition (rather than removing it when the item menu closes) ensures that
+// the target forecast and battle can still refer to the selected slot.
+#[skyline::hook(offset = 0x02671410)]
+fn unit_command_prepare(sequence: *mut u8, method: OptionalMethod) {
+    clear_temporary_ragnarok("command prepare");
+    call_original!(sequence, method);
+}
+
+#[skyline::hook(offset = 0x02671850)]
+fn unit_command_cancel(sequence: *mut u8, method: OptionalMethod) {
+    clear_temporary_ragnarok("command cancel");
+    call_original!(sequence, method);
+}
+
+#[skyline::hook(offset = 0x0265CF60)]
+fn free_cursor_prepare(sequence: *mut u8, method: OptionalMethod) {
+    clear_temporary_ragnarok("free cursor");
+    call_original!(sequence, method);
+}
+
+#[skyline::hook(offset = 0x0265B760)]
+fn human_map_dispose(sequence: *mut u8, method: OptionalMethod) {
+    clear_temporary_ragnarok("map dispose");
+    call_original!(sequence, method);
+}
+
 #[skyline::main(name = "engage_attack_evolution")]
 pub fn main() {
-    skyline::install_hooks!(get_engage_attack);
+    skyline::install_hooks!(get_engage_attack, create_bind_engage_attack, unit_command_prepare, unit_command_cancel, free_cursor_prepare, human_map_dispose);
     println!("[engage_attack_evolution] loaded (Engage 2.0.0, Celica level 10)");
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ragnarok_temporary_scope() {
+        assert!(!should_offer_temporary_ragnarok(9, false));
+        assert!(should_offer_temporary_ragnarok(10, false));
+        assert!(should_offer_temporary_ragnarok(14, false));
+        assert!(!should_offer_temporary_ragnarok(15, false));
+        assert!(!should_offer_temporary_ragnarok(10, true));
+    }
 
     #[test]
     fn celica_styles_match() {
