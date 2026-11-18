@@ -162,7 +162,7 @@ fn should_offer_temporary_ragnarok(bond: i32, already_present: bool) -> bool {
 // This never restores, replaces, or copies a real weapon or personal item.
 fn restore_reserved_padding(unit: &Unit, slot: i32, reason: &str) {
     let pointer = TEMP_FILLER_ITEM.swap(0, Ordering::SeqCst);
-    if !(5..8).contains(&slot) || pointer == 0 {
+    if !(0..8).contains(&slot) || pointer == 0 {
         return;
     }
     // This pointer is a static ItemData originally returned by the game's
@@ -285,10 +285,13 @@ fn offer_temporary_ragnarok() {
     let mut filler_slot = -1;
     let mut filler_item: *const ItemData = core::ptr::null();
     if index < 0 {
-        // Only recycle a vanilla reserved Engage placeholder: three reserved
-        // slots are 5..7. Never evict an actual weapon or a personal item.
-        // On the pinned engage dependency, no ItemData::try_index_get exists.
-        for candidate_slot in 5..8 {
+        // Vanilla pads unused Engage capacity with ItemData index 2, but
+        // those slots are NOT fixed at 5..7. The in-game v6 audit found the
+        // placeholder at physical slot 3 (the real items occupy slots 4..7).
+        // Scan all eight physical slots and match the exact sentinel by both
+        // UnitItem index and ItemData index, plus no mutable item metadata.
+        // Never replace a real item or an existing Engage weapon.
+        for candidate_slot in 0..8 {
             let Some(candidate) = unit.item_list.get_item(candidate_slot) else {
                 continue;
             };
@@ -451,7 +454,7 @@ fn human_map_dispose(sequence: *mut u8, method: OptionalMethod) {
 #[skyline::main(name = "engage_attack_evolution")]
 pub fn main() {
     skyline::install_hooks!(get_engage_attack, engage_attack_command_ctor, create_bind_target, unit_command_prepare, unit_command_cancel, free_cursor_prepare, human_map_dispose);
-    println!("[engage_attack_evolution] loaded (Engage 2.0.0, Celica level 10; picker slot-audit build v6)");
+    println!("[engage_attack_evolution] loaded (Engage 2.0.0, Celica level 10; picker dynamic-padding build v7)");
 }
 
 #[cfg(test)]
