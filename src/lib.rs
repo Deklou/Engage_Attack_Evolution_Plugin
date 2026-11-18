@@ -424,6 +424,90 @@ fn create_bind_target(
     call_original!(menu, mind, mask, skill, method);
 }
 
+// Diagnostic v8: distinguish native Engage item refresh from attack-target
+// filtering. Both hooks observe state only; they never alter the inventory.
+#[skyline::hook(offset = 0x01FB84C0)]
+fn trace_put_engage_items(
+    items: &engage::gamedata::item::UnitItemList,
+    god: &GodUnit,
+    engaged: bool,
+    method: OptionalMethod,
+) {
+    let owner = TEMP_OWNER.load(Ordering::SeqCst);
+    let slot = TEMP_SLOT.load(Ordering::SeqCst);
+    let watching = if owner != 0 && (0..8).contains(&slot) {
+        let unit = unsafe { &*(owner as *const Unit) };
+        core::ptr::eq(items, unit.item_list)
+    } else {
+        false
+    };
+    if watching {
+        let before = items.get_item(slot)
+            .map(|item| item.item.iid.get_string().ok().as_deref() == Some(CELICA_RAGNAROK_IID))
+            .unwrap_or(false);
+        println!(
+            "[engage_attack_evolution] picker Engage refresh BEFORE: slot={} Ragnarok={} engaged={}",
+            slot, before, engaged
+        );
+    }
+    call_original!(items, god, engaged, method);
+    if watching {
+        let after = items.get_item(slot)
+            .map(|item| item.item.iid.get_string().ok().as_deref() == Some(CELICA_RAGNAROK_IID))
+            .unwrap_or(false);
+        println!(
+            "[engage_attack_evolution] picker Engage refresh AFTER: slot={} Ragnarok={}",
+            slot, after
+        );
+    }
+}
+
+#[skyline::hook(offset = 0x01F5A0E0)]
+fn trace_attack_item_mask(
+    unit: &Unit,
+    mask: i32,
+    skill: *const SkillData,
+    method: OptionalMethod,
+) -> u32 {
+    let selected = TEMP_OWNER.load(Ordering::SeqCst) == unit as *const Unit as usize;
+    let slot = TEMP_SLOT.load(Ordering::SeqCst);
+    let relevant = selected && (0..8).contains(&slot);
+    if relevant {
+        let present = unit.item_list.get_item(slot)
+            .map(|item| item.item.iid.get_string().ok().as_deref() == Some(CELICA_RAGNAROK_IID))
+            .unwrap_or(false);
+        println!(
+            "[engage_attack_evolution] picker precheck BEFORE: slot={} Ragnarok={} mask={} skill={}",
+            slot, present, mask, !skill.is_null()
+        );
+    }
+    let result = call_original!(unit, mask, skill, method);
+    if relevant {
+        println!(
+            "[engage_attack_evolution] picker precheck AFTER: allowed_mask=0x{:02X} Ragnarok_allowed={}",
+            result, (result & (1_u32 << slot)) != 0
+        );
+    }
+    result
+}
+
+#[skyline::hook(offset = 0x0217E1B0)]
+fn trace_attack_menu_created(
+    menu: *mut u8,
+    mind: i32,
+    mask: i32,
+    skill: *const SkillData,
+    method: OptionalMethod,
+) {
+    if TEMP_OWNER.load(Ordering::SeqCst) != 0 {
+        println!(
+            "[engage_attack_evolution] picker AttackMenu created: mind={} mask={} skill_present={}",
+            mind, mask, !skill.is_null()
+        );
+    }
+    call_original!(menu, mind, mask, skill, method);
+}
+
 // These transitions end the selection/attack flow. Keeping the item until a
 // transition (rather than removing it when the item menu closes) ensures that
 // the target forecast and battle can still refer to the selected slot.
@@ -453,8 +537,8 @@ fn human_map_dispose(sequence: *mut u8, method: OptionalMethod) {
 
 #[skyline::main(name = "engage_attack_evolution")]
 pub fn main() {
-    skyline::install_hooks!(get_engage_attack, engage_attack_command_ctor, create_bind_target, unit_command_prepare, unit_command_cancel, free_cursor_prepare, human_map_dispose);
-    println!("[engage_attack_evolution] loaded (Engage 2.0.0, Celica level 10; picker dynamic-padding build v7)");
+    skyline::install_hooks!(get_engage_attack, engage_attack_command_ctor, create_bind_target, trace_put_engage_items, trace_attack_item_mask, trace_attack_menu_created, unit_command_prepare, unit_command_cancel, free_cursor_prepare, human_map_dispose);
+    println!("[engage_attack_evolution] loaded (Engage 2.0.0, Celica level 10; picker selection-trace build v8)");
 }
 
 #[cfg(test)]
