@@ -188,25 +188,22 @@ fn clear_temporary_ragnarok(reason: &str) {
     );
 }
 
-fn offer_temporary_ragnarok(skill: &SkillData, engage_target: bool) {
-    // When the engine routes Celica through the generic Engage target path,
-    // CommandSkill can still refer to the base attack even though the equipped
-    // skill has evolved. Mind 6 plus a verified Celica bond is authoritative.
-    if !engage_target && !is_celica_plus_skill(skill) {
-        println!("[engage_attack_evolution] picker skip: received non-plus skill");
-        return;
-    }
+fn offer_temporary_ragnarok() {
+    // Eligibility is checked against the active unit and Celica's numeric
+    // bond level, not the sometimes-stale CommandSkill of the attack menu.
     let unit = MapMind::get_unit();
     if !unsafe { unit_is_engaging(unit, None) } {
-        println!("[engage_attack_evolution] picker skip: unit is not engaged");
         return;
     }
     let Some(god) = celica_god(unit) else {
-        println!("[engage_attack_evolution] picker skip: Celica not found on selected unit");
         return;
     };
     let bond = unsafe { god_unit_get_level(god, unit, None) };
     let owned = unit.item_list.has_item_iid(CELICA_RAGNAROK_IID);
+    println!(
+        "[engage_attack_evolution] picker eligibility: bond={} Ragnarok already_present={}",
+        bond, owned
+    );
     if !should_offer_temporary_ragnarok(bond, owned) {
         println!("[engage_attack_evolution] picker skip: bond={} Ragnarok already_present={}", bond, owned);
         return;
@@ -258,6 +255,17 @@ fn offer_temporary_ragnarok(skill: &SkillData, engage_target: bool) {
     );
 }
 
+// The upgraded Celica attack is obtained while the unit-command menu is
+// constructed. The selection-specific entry hooks did not fire in the actual
+// tested flow (v1 and v2). Create a temporary, augmented Ragnarok immediately
+// after the Engage Attack menu item is constructed; the weapon selection is
+// prepared later and now sees this additional choice.
+#[skyline::hook(offset = 0x01E4D670)]
+fn engage_attack_command_ctor(item: *mut u8, method: OptionalMethod) {
+    call_original!(item, method);
+    offer_temporary_ragnarok();
+}
+
 // This is the common target-selection entry point, reached also by the
 // normal attack dispatch used for skills upgraded by get_engage_attack.
 // Hooking CreateBindEngageAttack alone did not fire in the actual link-10
@@ -279,7 +287,7 @@ fn create_bind_target(
                 mind, mask, is_plus
             );
             if mind == 6 || is_plus {
-                offer_temporary_ragnarok(skill, mind == 6);
+                offer_temporary_ragnarok();
             }
         } else {
             println!("[engage_attack_evolution] picker target hook: mind={} null skill", mind);
@@ -317,8 +325,8 @@ fn human_map_dispose(sequence: *mut u8, method: OptionalMethod) {
 
 #[skyline::main(name = "engage_attack_evolution")]
 pub fn main() {
-    skyline::install_hooks!(get_engage_attack, create_bind_target, unit_command_prepare, unit_command_cancel, free_cursor_prepare, human_map_dispose);
-    println!("[engage_attack_evolution] loaded (Engage 2.0.0, Celica level 10; picker target-hook build v2)");
+    skyline::install_hooks!(get_engage_attack, engage_attack_command_ctor, create_bind_target, unit_command_prepare, unit_command_cancel, free_cursor_prepare, human_map_dispose);
+    println!("[engage_attack_evolution] loaded (Engage 2.0.0, Celica level 10; picker command-ctor build v3)");
 }
 
 #[cfg(test)]
