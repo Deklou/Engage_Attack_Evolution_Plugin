@@ -190,18 +190,22 @@ fn clear_temporary_ragnarok(reason: &str) {
 
 fn offer_temporary_ragnarok(skill: &SkillData) {
     if !is_celica_plus_skill(skill) {
+        println!("[engage_attack_evolution] picker skip: received non-plus skill");
         return;
     }
     let unit = MapMind::get_unit();
     if !unsafe { unit_is_engaging(unit, None) } {
+        println!("[engage_attack_evolution] picker skip: unit is not engaged");
         return;
     }
     let Some(god) = celica_god(unit) else {
+        println!("[engage_attack_evolution] picker skip: Celica not found on selected unit");
         return;
     };
     let bond = unsafe { god_unit_get_level(god, unit, None) };
     let owned = unit.item_list.has_item_iid(CELICA_RAGNAROK_IID);
     if !should_offer_temporary_ragnarok(bond, owned) {
+        println!("[engage_attack_evolution] picker skip: bond={} Ragnarok already_present={}", bond, owned);
         return;
     }
 
@@ -259,6 +263,7 @@ fn create_bind_engage_attack(
     skill: *const SkillData,
     method: OptionalMethod,
 ) {
+    println!("[engage_attack_evolution] picker hook entered: skill_present={}", !skill.is_null());
     if let Some(skill) = unsafe { skill.as_ref() } {
         offer_temporary_ragnarok(skill);
     }
@@ -295,7 +300,7 @@ fn human_map_dispose(sequence: *mut u8, method: OptionalMethod) {
 #[skyline::main(name = "engage_attack_evolution")]
 pub fn main() {
     skyline::install_hooks!(get_engage_attack, create_bind_engage_attack, unit_command_prepare, unit_command_cancel, free_cursor_prepare, human_map_dispose);
-    println!("[engage_attack_evolution] loaded (Engage 2.0.0, Celica level 10)");
+    println!("[engage_attack_evolution] loaded (Engage 2.0.0, Celica level 10; picker diagnostic build v1)");
 }
 
 #[cfg(test)]
