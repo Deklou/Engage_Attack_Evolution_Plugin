@@ -128,6 +128,8 @@ fn set_engage_weapon_god(item: &UnitItem, unit: &Unit, method: OptionalMethod);
 // We never store the temporary UnitItem itself across a menu transition.
 static TEMP_OWNER: AtomicUsize = AtomicUsize::new(0);
 static TEMP_SLOT: AtomicI32 = AtomicI32::new(-1);
+// The vanilla game pads the three reserved Engage slots with ItemData index 2.
+static TEMP_FILLER_SLOT: AtomicI32 = AtomicI32::new(-1);
 
 fn celica_god(unit: &Unit) -> Option<&GodUnit> {
     for god in [unit.god_link, unit.god_unit].into_iter().flatten() {
@@ -152,14 +154,48 @@ fn should_offer_temporary_ragnarok(bond: i32, already_present: bool) -> bool {
 
 // Only dispose Ragnarok inserted by this plugin; do not resynchronize the
 // entire inventory, which could interfere with other mods' Engage weapons.
+// Restore only the *vanilla reserved Engage padding* that was borrowed.
+// This never restores, replaces, or copies a real weapon or personal item.
+fn restore_reserved_padding(unit: &Unit, slot: i32, reason: &str) {
+    if !(5..8).contains(&slot) {
+        return;
+    }
+    let Some(padding) = ItemData::try_index_get(2) else {
+        println!("[engage_attack_evolution] restore padding skipped: ItemData index 2 missing");
+        return;
+    };
+    let Some(item) = unit.item_list.get_item(slot) else {
+        return;
+    };
+    if item.index == 2 && core::ptr::eq(item.item, padding) {
+        return; // Vanilla already restored the placeholder.
+    }
+    if item.index != 0 {
+        println!(
+            "[engage_attack_evolution] restore padding skipped: slot={} occupied after {}",
+            slot, reason
+        );
+        return;
+    }
+    let restored = unsafe { unititemlist_add(unit.item_list, padding, None) };
+    println!(
+        "[engage_attack_evolution] reserved Engage padding restore: wanted={} actual={} after {}",
+        slot, restored, reason
+    );
+}
+
+// Only dispose Ragnarok inserted by this plugin; do not resynchronize the
+// entire inventory, which could interfere with other mods' Engage weapons.
 fn clear_temporary_ragnarok(reason: &str) {
     let owner = TEMP_OWNER.swap(0, Ordering::SeqCst);
     let slot = TEMP_SLOT.swap(-1, Ordering::SeqCst);
+    let filler_slot = TEMP_FILLER_SLOT.swap(-1, Ordering::SeqCst);
     if owner == 0 {
         return;
     }
 
     let unit = unsafe { &*(owner as *const Unit) };
+    let mut removed = false;
     // An item can change slots when the attack menu equips it. Look in the
     // remembered slot first, then scan the other seven slots.
     for index in core::iter::once(slot).chain((0..8).filter(|&i| i != slot)) {
@@ -179,13 +215,19 @@ fn clear_temporary_ragnarok(reason: &str) {
                 "[engage_attack_evolution] temporary Ragnarok removed: unit={} slot={} after {}",
                 unit.ident, index, reason
             );
-            return;
+            removed = true;
+            break;
         }
     }
-    println!(
-        "[engage_attack_evolution] temporary Ragnarok already absent: unit={} after {}",
-        unit.ident, reason
-    );
+    if !removed {
+        println!(
+            "[engage_attack_evolution] temporary Ragnarok already absent: unit={} after {}",
+            unit.ident, reason
+        );
+    }
+    if filler_slot >= 0 {
+        restore_reserved_padding(unit, filler_slot, reason);
+    }
 }
 
 fn offer_temporary_ragnarok() {
@@ -234,10 +276,60 @@ fn offer_temporary_ragnarok() {
     };
     // The engine has eight physical slots. When all are full, never evict an
     // existing item or modify a user's actual inventory to make room.
-    let index = unsafe { unititemlist_add(unit.item_list, ragnarok, None) };
+    let mut index = unsafe { unititemlist_add(unit.item_list, ragnarok, None) };
+    let mut filler_slot = -1;
     if index < 0 {
-        println!("[engage_attack_evolution] no free item slot for temporary Ragnarok");
-        return;
+        // Vanilla keeps exactly three Engage slots reserved and fills unused
+        // ones with a non-weapon ItemData of index 2. Its Index is nonzero,
+        // so GetEmptyIndex returns -1 even though a reserved slot is padding.
+        // Recycle *only* that exact padding, never an inventory item or an
+        // actual Engage weapon. If none exists, leave everything untouched.
+        if let Some(padding) = ItemData::try_index_get(2) {
+            for candidate_slot in 5..8 {
+                let Some(candidate) = unit.item_list.get_item(candidate_slot) else {
+                    continue;
+                };
+                if candidate.index != 2
+                    || !core::ptr::eq(candidate.item, padding)
+                    || candidate.god_unit.is_some()
+                    || candidate.engrave.is_some()
+                    || candidate.flags != 0
+                    || candidate.refine_level != 0
+                {
+                    continue;
+                }
+
+                candidate.dispose();
+                let added = unsafe { unititemlist_add(unit.item_list, ragnarok, None) };
+                if added == candidate_slot {
+                    index = added;
+                    filler_slot = candidate_slot;
+                    println!(
+                        "[engage_attack_evolution] recycled reserved Engage padding slot={}",
+                        candidate_slot
+                    );
+                } else {
+                    // Never proceed with a mismatched slot or overwrite data.
+                    if added >= 0 {
+                        if let Some(unexpected) = unit.item_list.get_item(added) {
+                            unexpected.dispose();
+                        }
+                    }
+                    restore_reserved_padding(unit, candidate_slot, "failed insertion");
+                    println!(
+                        "[engage_attack_evolution] reserved slot insertion failed: expected={} got={}",
+                        candidate_slot, added
+                    );
+                }
+                break;
+            }
+        }
+        if index < 0 {
+            println!(
+                "[engage_attack_evolution] no free slot or verified Engage padding; leaving items untouched"
+            );
+            return;
+        }
     }
     let Some(inserted) = unit.item_list.get_item(index) else {
         // Native Add should always return a valid slot on success.
@@ -248,6 +340,7 @@ fn offer_temporary_ragnarok() {
     // upgrades to stats and skills. Do not create a plain, unaugmented copy.
     unsafe { set_engage_weapon_god(inserted, unit, None) };
     TEMP_SLOT.store(index, Ordering::SeqCst);
+    TEMP_FILLER_SLOT.store(filler_slot, Ordering::SeqCst);
     TEMP_OWNER.store(owner, Ordering::SeqCst);
     println!(
         "[engage_attack_evolution] temporary augmented Ragnarok available: unit={} bond={} slot={}",
@@ -327,7 +420,7 @@ fn human_map_dispose(sequence: *mut u8, method: OptionalMethod) {
 #[skyline::main(name = "engage_attack_evolution")]
 pub fn main() {
     skyline::install_hooks!(get_engage_attack, engage_attack_command_ctor, create_bind_target, unit_command_prepare, unit_command_cancel, free_cursor_prepare, human_map_dispose);
-    println!("[engage_attack_evolution] loaded (Engage 2.0.0, Celica level 10; picker command-ctor build v3)");
+    println!("[engage_attack_evolution] loaded (Engage 2.0.0, Celica level 10; picker reserved-padding build v4)");
 }
 
 #[cfg(test)]
