@@ -4,6 +4,33 @@ Fire Emblem Engage **2.0.0** · **Skyline / Cobalt** · Rust.
 
 Warp Ragnarok de Célica devient automatiquement **Warp Ragnarok+** au **niveau de lien 10**. La version + remplace l'attaque originale : aucune entrée de menu supplémentaire.
 
+## Expérience : choix de Ragnarok sans déblocage au lien 15
+
+Branche expérimentale : `feature/celica-temporary-ragnarok-picker` (la branche fonctionnelle `feature/celica-warp-ragnarok-plus` reste inchangée).
+
+Sans nouvelle modification XML : au lien 10–14, quand le menu d'armes de Warp Ragnarok+ s'ouvre, le plugin ajoute temporairement `IID_セリカ_ライナロック` à un emplacement libre. Le jeu affiche alors Séraphim, Ragnarok et les autres tomes disponibles dans son sélecteur normal. La création et la liaison à Célica utilisent les méthodes natives d'Engage, qui appliquent les Augments. Le plugin appelle `UnitItem.Dispose` lors du retour au menu de commande, à la carte ou à la fermeture de la séquence pour retirer uniquement son arme temporaire.
+
+Garde-fous : uniquement Célica, variantes jouables, fusion active, lien 10–14, et seulement si Ragnarok n'est pas déjà présent. S'il n'y a aucun emplacement libre (maximum 8), aucune arme existante n'est supprimée, Ragnarok n'est pas proposé et un avertissement est écrit dans le log. Lien 15+ : comportement natif.
+
+Pour le premier test, avec une sauvegarde de précaution et Ryujinx fermé : 
+
+~~~bash
+git fetch origin
+git switch --track origin/feature/celica-temporary-ragnarok-picker
+bash scripts/deploy.sh
+~~~
+
+Ne **pas** lancer `scripts/install_test_xml.sh` : le XML est entièrement géré manuellement dans le modpack.
+
+Scénarios prioritaires : (1) à lien 10, ouvrir Warp Ragnarok+, voir Séraphim et Ragnarok, contrôler les prévisions et le choix ; (2) annuler le menu sans attaquer et vérifier qu'aucun Ragnarok additionnel ne demeure dans l'inventaire ; (3) relancer, choisir Ragnarok, terminer l'attaque et vérifier le retrait ; (4) comparer les statistiques d'un Ragnarok augmenté et la prévision ; (5) vérifier lien 9 puis lien 15. En cas de crash, arrêter et récupérer les logs. Ce build n'a pas encore été compilé ni validé dans Ryujinx.
+
+Logs attendus :
+
+~~~text
+[engage_attack_evolution] temporary augmented Ragnarok available: unit=... bond=10 slot=...
+[engage_attack_evolution] temporary Ragnarok removed: unit=... slot=... after ...
+~~~
+
 ## Fonctionnement
 
 Le plugin intercepte `App.GodUnit.GetEngageAttack` (offset Skyline `0x02341640`), appelle la fonction native et remplace le skill retourné uniquement pour Célica, lien ≥ 10, lorsque la variante + correspondante est disponible. Le niveau numérique est obtenu via `GodUnit.GetLevel` (`0x023302C0`). Sinon, il conserve le comportement vanilla.
