@@ -188,8 +188,11 @@ fn clear_temporary_ragnarok(reason: &str) {
     );
 }
 
-fn offer_temporary_ragnarok(skill: &SkillData) {
-    if !is_celica_plus_skill(skill) {
+fn offer_temporary_ragnarok(skill: &SkillData, engage_target: bool) {
+    // When the engine routes Celica through the generic Engage target path,
+    // CommandSkill can still refer to the base attack even though the equipped
+    // skill has evolved. Mind 6 plus a verified Celica bond is authoritative.
+    if !engage_target && !is_celica_plus_skill(skill) {
         println!("[engage_attack_evolution] picker skip: received non-plus skill");
         return;
     }
@@ -268,10 +271,18 @@ fn create_bind_target(
     skill: *const SkillData,
     method: OptionalMethod,
 ) {
-    if let Some(skill) = unsafe { skill.as_ref() } {
-        if is_celica_plus_skill(skill) {
-            println!("[engage_attack_evolution] picker target hook: mind={} mask={}", mind, mask);
-            offer_temporary_ragnarok(skill);
+    if mind == 3 || mind == 6 {
+        if let Some(skill) = unsafe { skill.as_ref() } {
+            let is_plus = is_celica_plus_skill(skill);
+            println!(
+                "[engage_attack_evolution] picker target hook: mind={} mask={} plus={}",
+                mind, mask, is_plus
+            );
+            if mind == 6 || is_plus {
+                offer_temporary_ragnarok(skill, mind == 6);
+            }
+        } else {
+            println!("[engage_attack_evolution] picker target hook: mind={} null skill", mind);
         }
     }
     call_original!(menu, mind, mask, skill, method);
