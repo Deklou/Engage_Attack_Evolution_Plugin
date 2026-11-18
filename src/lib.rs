@@ -107,8 +107,8 @@ fn get_engage_attack(
 }
 
 
-// Temporary weapon picker: only activated while opening Warp Ragnarok+'s
-// item selection. Never unlock Ragnarok in GodGrowthData or at Engage start.
+// Temporary weapon picker: activated while preparing the Engage Attack
+// command, before its item selection. No permanent unlock in GodGrowthData.
 //
 // main_200: UnitItemList.Add, UnitItem.SetEngageWeaponGod(Unit), and
 // UnitItem.Dispose are native routines. Dispose clears just the temporary
@@ -263,6 +263,7 @@ fn offer_temporary_ragnarok() {
 #[skyline::hook(offset = 0x01E4D670)]
 fn engage_attack_command_ctor(item: *mut u8, method: OptionalMethod) {
     call_original!(item, method);
+    println!("[engage_attack_evolution] picker command ctor entered");
     offer_temporary_ragnarok();
 }
 
