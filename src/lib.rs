@@ -255,19 +255,26 @@ fn offer_temporary_ragnarok(skill: &SkillData) {
     );
 }
 
-// The vanilla UI enumerates the unit's 8 slots, so make Ragnarok available
-// only just before creating Warp Ragnarok+'s attack/weapon selection.
-#[skyline::hook(offset = 0x01DEE3C0)]
-fn create_bind_engage_attack(
+// This is the common target-selection entry point, reached also by the
+// normal attack dispatch used for skills upgraded by get_engage_attack.
+// Hooking CreateBindEngageAttack alone did not fire in the actual link-10
+// save (diagnostic v1), because the game can dispatch through CreateBindAttack.
+// Insert *before* CreateBindTarget enumerates and creates the weapon menu.
+#[skyline::hook(offset = 0x01DEDC80)]
+fn create_bind_target(
     menu: *mut u8,
+    mind: i32,
+    mask: i32,
     skill: *const SkillData,
     method: OptionalMethod,
 ) {
-    println!("[engage_attack_evolution] picker hook entered: skill_present={}", !skill.is_null());
     if let Some(skill) = unsafe { skill.as_ref() } {
-        offer_temporary_ragnarok(skill);
+        if is_celica_plus_skill(skill) {
+            println!("[engage_attack_evolution] picker target hook: mind={} mask={}", mind, mask);
+            offer_temporary_ragnarok(skill);
+        }
     }
-    call_original!(menu, skill, method);
+    call_original!(menu, mind, mask, skill, method);
 }
 
 // These transitions end the selection/attack flow. Keeping the item until a
@@ -299,8 +306,8 @@ fn human_map_dispose(sequence: *mut u8, method: OptionalMethod) {
 
 #[skyline::main(name = "engage_attack_evolution")]
 pub fn main() {
-    skyline::install_hooks!(get_engage_attack, create_bind_engage_attack, unit_command_prepare, unit_command_cancel, free_cursor_prepare, human_map_dispose);
-    println!("[engage_attack_evolution] loaded (Engage 2.0.0, Celica level 10; picker diagnostic build v1)");
+    skyline::install_hooks!(get_engage_attack, create_bind_target, unit_command_prepare, unit_command_cancel, free_cursor_prepare, human_map_dispose);
+    println!("[engage_attack_evolution] loaded (Engage 2.0.0, Celica level 10; picker target-hook build v2)");
 }
 
 #[cfg(test)]
