@@ -1,0 +1,25 @@
+[package]
+name = "engage_attack_evolution"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[package.metadata.skyline]
+titleid = "0100a6301214e000"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# Stack shared with the proven Engage Language Plugin (Engage 2.0.0).
+engage = { git = "https://github.com/DivineDragonFanClub/engage.git", version = "0.6.3" }
+skyline = "0.2.0"
+unity = { git = "https://github.com/DivineDragonFanClub/unity.git", version = "0.3.0" }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+opt-level = 1
+lto = true
