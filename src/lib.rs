@@ -128,12 +128,14 @@ fn set_engage_weapon_god(item: &UnitItem, unit: &Unit, method: OptionalMethod);
 // We never store the temporary UnitItem itself across a menu transition.
 static TEMP_OWNER: AtomicUsize = AtomicUsize::new(0);
 static TEMP_SLOT: AtomicI32 = AtomicI32::new(-1);
+static TEMP_INSTANCE: AtomicUsize = AtomicUsize::new(0);
 // The vanilla game pads the three reserved Engage slots with ItemData index 2.
 static TEMP_FILLER_SLOT: AtomicI32 = AtomicI32::new(-1);
 // ItemData in the pinned engage 0.6.3 dependency has no index lookup API.
 // Hold the exact static ItemData pointer captured from the vanilla slot.
 static TEMP_FILLER_ITEM: AtomicUsize = AtomicUsize::new(0);
 static SLOT_DIAGNOSTIC_REPORTED: AtomicBool = AtomicBool::new(false);
+static REINJECTION_REPORTED: AtomicBool = AtomicBool::new(false);
 
 fn celica_god(unit: &Unit) -> Option<&GodUnit> {
     for god in [unit.god_link, unit.god_unit].into_iter().flatten() {
@@ -194,29 +196,30 @@ fn restore_reserved_padding(unit: &Unit, slot: i32, reason: &str) {
 // entire inventory, which could interfere with other mods' Engage weapons.
 fn clear_temporary_ragnarok(reason: &str) {
     let owner = TEMP_OWNER.swap(0, Ordering::SeqCst);
-    let slot = TEMP_SLOT.swap(-1, Ordering::SeqCst);
+    let _slot = TEMP_SLOT.swap(-1, Ordering::SeqCst);
     let filler_slot = TEMP_FILLER_SLOT.swap(-1, Ordering::SeqCst);
+    let instance = TEMP_INSTANCE.swap(0, Ordering::SeqCst);
+    REINJECTION_REPORTED.store(false, Ordering::Relaxed);
     if owner == 0 {
         return;
     }
 
     let unit = unsafe { &*(owner as *const Unit) };
     let mut removed = false;
-    // An item can change slots when the attack menu equips it. Look in the
-    // remembered slot first, then scan the other seven slots.
-    for index in core::iter::once(slot).chain((0..8).filter(|&i| i != slot)) {
-        if !(0..8).contains(&index) {
-            continue;
-        }
+    // Match the exact UnitItem instance we created, not every Celica
+    // Ragnarok; this also tolerates a slot reorder by the engine.
+    for index in 0..8 {
         let Some(item) = unit.item_list.get_item(index) else {
             continue;
         };
-        if item.item.iid.get_string().ok().as_deref() == Some(CELICA_RAGNAROK_IID)
+        if instance != 0
+            && item as *const _ as usize == instance
+            && item.item.iid.get_string().ok().as_deref() == Some(CELICA_RAGNAROK_IID)
             && item.god_unit.is_some_and(|god| {
                 god.data.gid.get_string().ok().as_deref() == Some("GID_セリカ")
             })
         {
-            item.dispose(); // App.UnitItem.Dispose, with native GC write barriers.
+            item.dispose();
             println!(
                 "[engage_attack_evolution] temporary Ragnarok removed: unit={} slot={} after {}",
                 unit.ident, index, reason
@@ -373,6 +376,7 @@ fn offer_temporary_ragnarok() {
     // upgrades to stats and skills. Do not create a plain, unaugmented copy.
     unsafe { set_engage_weapon_god(inserted, unit, None) };
     TEMP_SLOT.store(index, Ordering::SeqCst);
+    TEMP_INSTANCE.store(inserted as *const _ as usize, Ordering::SeqCst);
     TEMP_FILLER_SLOT.store(filler_slot, Ordering::SeqCst);
     TEMP_FILLER_ITEM.store(filler_item as usize, Ordering::SeqCst);
     TEMP_OWNER.store(owner, Ordering::SeqCst);
@@ -429,35 +433,65 @@ fn create_bind_target(
 #[skyline::hook(offset = 0x01FB84C0)]
 fn trace_put_engage_items(
     items: &engage::gamedata::item::UnitItemList,
-    god: &GodUnit,
+    god: *const GodUnit,
     engaged: bool,
     method: OptionalMethod,
 ) {
+    // Native synchronization is authoritative. It removes any Engage item
+    // absent from the bond's unlock list. Run it first, then restore only the
+    // temporary Ragnarok we already offered for the *selected* Celica unit.
+    call_original!(items, god, engaged, method);
+
     let owner = TEMP_OWNER.load(Ordering::SeqCst);
     let slot = TEMP_SLOT.load(Ordering::SeqCst);
-    let watching = if owner != 0 && (0..8).contains(&slot) {
-        let unit = unsafe { &*(owner as *const Unit) };
-        core::ptr::eq(items, unit.item_list)
-    } else {
-        false
-    };
-    if watching {
-        let before = items.get_item(slot)
-            .map(|item| item.item.iid.get_string().ok().as_deref() == Some(CELICA_RAGNAROK_IID))
-            .unwrap_or(false);
-        println!(
-            "[engage_attack_evolution] picker Engage refresh BEFORE: slot={} Ragnarok={} engaged={}",
-            slot, before, engaged
-        );
+    if owner == 0 || !(0..8).contains(&slot) || !engaged || god.is_null() {
+        return;
     }
-    call_original!(items, god, engaged, method);
-    if watching {
-        let after = items.get_item(slot)
-            .map(|item| item.item.iid.get_string().ok().as_deref() == Some(CELICA_RAGNAROK_IID))
-            .unwrap_or(false);
+    let unit = unsafe { &*(owner as *const Unit) };
+    if !core::ptr::eq(items, unit.item_list) {
+        return;
+    }
+    let Some(celica) = celica_god(unit) else { return; };
+    if !core::ptr::eq(god, celica as *const GodUnit)
+        || !unsafe { unit_is_engaging(unit, None) }
+    {
+        return;
+    }
+    let bond = unsafe { god_unit_get_level(celica, unit, None) };
+    if !(10..RAGNAROK_UNLOCK_LEVEL).contains(&bond) {
+        return;
+    }
+    let Some(candidate) = items.get_item(slot) else { return; };
+    if candidate.item.iid.get_string().ok().as_deref() == Some(CELICA_RAGNAROK_IID) {
+        return; // No need to touch a weapon preserved by the engine.
+    }
+    let padding = TEMP_FILLER_ITEM.load(Ordering::SeqCst);
+    let is_original_padding = padding != 0
+        && candidate.index == 2
+        && candidate.item as *const ItemData as usize == padding
+        && candidate.god_unit.is_none()
+        && candidate.engrave.is_none()
+        && candidate.flags == 0
+        && candidate.refine_level == 0;
+    // Only touch a true empty slot or the exact native padding originally
+    // borrowed. Other mods' weapons and personal inventory are never touched.
+    if candidate.index != 0 && !is_original_padding {
+        if !REINJECTION_REPORTED.swap(true, Ordering::Relaxed) {
+            println!(
+                "[engage_attack_evolution] picker sync blocked: slot={} occupied index={}",
+                slot, candidate.index
+            );
+        }
+        return;
+    }
+    let Some(ragnarok) = ItemData::get(CELICA_RAGNAROK_IID) else { return; };
+    candidate.ctor(ragnarok);
+    unsafe { set_engage_weapon_god(candidate, unit, None) };
+    TEMP_INSTANCE.store(candidate as *const _ as usize, Ordering::SeqCst);
+    if !REINJECTION_REPORTED.swap(true, Ordering::Relaxed) {
         println!(
-            "[engage_attack_evolution] picker Engage refresh AFTER: slot={} Ragnarok={}",
-            slot, after
+            "[engage_attack_evolution] picker Ragnarok restored AFTER native Engage refresh: unit={} bond={} slot={}",
+            unit.ident, bond, slot
         );
     }
 }
@@ -511,12 +545,6 @@ fn trace_attack_menu_created(
 // These transitions end the selection/attack flow. Keeping the item until a
 // transition (rather than removing it when the item menu closes) ensures that
 // the target forecast and battle can still refer to the selected slot.
-#[skyline::hook(offset = 0x02671410)]
-fn unit_command_prepare(sequence: *mut u8, method: OptionalMethod) {
-    clear_temporary_ragnarok("command prepare");
-    call_original!(sequence, method);
-}
-
 #[skyline::hook(offset = 0x02671850)]
 fn unit_command_cancel(sequence: *mut u8, method: OptionalMethod) {
     clear_temporary_ragnarok("command cancel");
@@ -537,8 +565,8 @@ fn human_map_dispose(sequence: *mut u8, method: OptionalMethod) {
 
 #[skyline::main(name = "engage_attack_evolution")]
 pub fn main() {
-    skyline::install_hooks!(get_engage_attack, engage_attack_command_ctor, create_bind_target, trace_put_engage_items, trace_attack_item_mask, trace_attack_menu_created, unit_command_prepare, unit_command_cancel, free_cursor_prepare, human_map_dispose);
-    println!("[engage_attack_evolution] loaded (Engage 2.0.0, Celica level 10; picker selection-trace build v8)");
+    skyline::install_hooks!(get_engage_attack, engage_attack_command_ctor, create_bind_target, trace_put_engage_items, trace_attack_item_mask, trace_attack_menu_created, unit_command_cancel, free_cursor_prepare, human_map_dispose);
+    println!("[engage_attack_evolution] loaded (Engage 2.0.0, Celica level 10; picker post-sync build v9)");
 }
 
 #[cfg(test)]
