@@ -2,65 +2,64 @@
 
 Fire Emblem Engage **2.0.0** · **Skyline / Cobalt** · Rust.
 
-Premier cas : l'attaque de fusion de **Célica** évolue automatiquement en **Warp Ragnarok+** au **niveau de lien 10**. L'attaque originale reste disponible aux niveaux 1–9 et n'est pas ajoutée en double au menu.
+Warp Ragnarok de Célica devient automatiquement **Warp Ragnarok+** au **niveau de lien 10**. La version + remplace l'attaque originale : aucune entrée de menu supplémentaire.
 
 ## Fonctionnement
 
-Le hook intercepte `App.GodUnit.GetEngageAttack(GodUnit, Unit)` (offset `0x02341640` dans `main_200`), appelle d'abord le jeu, puis applique les règles définies dans `src/lib.rs`. Il utilise `GodUnit.GetLevel(GodUnit, Unit)` (`0x023302C0`), qui renvoie le **niveau de lien numérique**, et non le rang de soutien.
+Le plugin intercepte `App.GodUnit.GetEngageAttack` (offset Skyline `0x02341640`), appelle la fonction native et remplace le skill retourné uniquement pour Célica, lien ≥ 10, lorsque la variante + correspondante est disponible. Le niveau numérique est obtenu via `GodUnit.GetLevel` (`0x023302C0`). Sinon, il conserve le comportement vanilla.
 
-Configuration initiale :
+La configuration initiale est dans `src/lib.rs`. Le SID utilisé correspond à **ton XML réel** :
 
-| Emblème | Niveau | SID original | SID amélioré |
-| --- | --- | --- | --- |
-| Célica (`GID_セリカ`) | ≥ 10 | `SID_セリカエンゲージ技` | `SID_セリカエンゲージ技_Plus` |
+- Original : `SID_セリカエンゲージ技`
+- Évolution : `SID_セリカエンゲージ技＋` (attention : `＋` pleine largeur, **pas** `_Plus`)
+- Variantes : `＋_竜族`, `＋_騎馬`, `＋_飛行`, `＋_魔法`
 
-Les variantes `_竜族`, `_騎馬`, `_飛行`, `_魔法` sont conservées. Les variantes ennemies `_闇` ne sont pas touchées. Le hook ne modifie **ni God.xml ni le menu**, et restitue l'attaque native si la version améliorée manque.
+Les variantes ennemies `_闇` et les autres emblèmes ne sont pas modifiés.
 
-L'ajout d'autres emblèmes se fait en étendant `EVOLUTIONS` dans `src/lib.rs`.
+## Préparer le XML déjà ajouté dans engage_modpack
 
-## Préparer les XML
+Au 18 novembre 2026, ton `Skill.xml` contient **la ligne Warp Ragnarok+ de base**, ainsi que son icône `セリカエンゲージ技＋.png`. Il manque les quatre variantes « + » de classe : la ligne de base pointe encore vers les variantes natives.
 
-Le plugin **n'invente pas les données du skill** : les cinq SID améliorés doivent exister dans le `Skill.xml` effectivement chargé par Cobalt. Ce dépôt propose un générateur conservateur, à utiliser sur une **copie** de ton fichier actuel :
+Le script `tools/generate_celica_plus.py` complète **ton XML existant** sans en écraser les données :
+
+- Corrige les liens de la ligne « + » existante et conserve ses clés MSBT personnalisées.
+- Ajoute quatre skills `＋_竜族`, `＋_騎馬`, `＋_飛行`, `＋_魔法`, en gardant les effets propres à chaque classe.
+- Associe l'icône « + » aux cinq skills améliorés.
+- Applique `EquipIids=""` et `WeaponProhibit="959"` pour autoriser uniquement les tomes (masque à valider en jeu).
+- Met à jour le compteur XML, préserve le BOM et les retours ligne.
+
+Depuis le dossier du plugin, en utilisant le `Skill.xml` **à jour** du modpack :
 
 ~~~bash
-python3 tools/generate_celica_plus.py /chemin/vers/Skill.xml /tmp/Skill.plus.xml
+python3 tools/generate_celica_plus.py /chemin/vers/Skill.xml /tmp/Skill.celica-plus.xml
 ~~~
 
-Le script refuse d'écraser le fichier source ou un fichier de sortie déjà existant. Il duplique les cinq lignes de Célica, ajuste les références entre variantes, incrémente le `Count` de la feuille et utilise :
-- `EquipIids=""` : l'attaque n'impose plus Ragnarok ;
-- `WeaponProhibit="959"` : masque visant à n'autoriser que les tomes (kind 6, à valider en jeu) ;
-- les nouveaux identifiants `MSID_CelicaEngageAtkPlus`, `MSID_H_CelicaEngageAtkPlus`, `MSID_H_CelicaEngageAtkPlus_Dragon`, `_Horse`, `_Fly`, `_Magic` et `MSID_H_CelicaEngageAtkPlus_CMD`.
+Le script refuse d'écraser son entrée ou sa sortie. Pour tester, jeu fermé, **sauvegarder le Skill.xml actif** puis y installer la **copie générée**. Ne pas travailler directement sur `main` du dépôt du modpack.
 
-**À faire manuellement :** ajouter les messages dans tes fichiers MSBT (nom, aide et description), puis **après sauvegarde du XML existant et jeu fermé** installer la copie résultante comme `Emblem_Rework/patches/xml/Skill.xml`. Les fichiers XML et MSBT de `engage_modpack` ne sont pas modifiés depuis ce dépôt.
+Les **traductions peuvent attendre** : le nom ou la description peut temporairement s'afficher comme une clé MSBT. Les variantes générées réutilisent les clés du skill + existant.
 
-Le générateur de XML ne garantit **pas** que le moteur affiche une liste de tomes à choisir : ce comportement doit être confirmé par un test en jeu. Il ne modifie pas les animations.
-
-Test du générateur, sans jeu ni mod installé :
+Test du générateur (facultatif) :
 
 ~~~bash
 python3 -m unittest discover -s tests
 ~~~
 
-## Compiler / tester (WSL Ubuntu)
+## Compiler et déployer
 
-Cloner ou ouvrir **ce dépôt dédié**, et se placer sur la branche de la PR. Vérifier que Rust / Cargo Skyline sont accessibles, puis **fermer Ryujinx** :
+Le plugin reste sur la branche de la [PR #1](https://github.com/Deklou/Engage_Attack_Evolution_Plugin/pull/1). Après mise à jour de la branche, fermer Ryujinx puis lancer :
 
 ~~~bash
 bash scripts/deploy.sh
 ~~~
 
-Le script compile avec `cargo skyline build --release`, puis installe le NRO uniquement dans `sdcard/engage/mods/Attack_Evolution/libengage_attack_evolution.nro`. Il sauvegarde un éventuel NRO précédent en `.bak`. Aucun autre plugin existant n'est remplacé. Utiliser `RYUJINX_DIR=/chemin/vers/Ryujinx` si le chemin WSL ne peut pas être détecté.
+Le script compile et sauvegarde l'ancien NRO dans `.bak` avant d'installer uniquement `sdcard/engage/mods/Attack_Evolution/libengage_attack_evolution.nro`.
 
-### Vérification en jeu
+## Validation
 
-1. **Test de chargement** : chercher `[engage_attack_evolution] loaded` dans le log Ryujinx.
-2. **Sans XML amélioré** : Célica à lien 10+ doit conserver Warp Ragnarok et loguer une fois `upgrade SID not found`.
-3. **Avec XML amélioré et messages** : vérifier Célica aux niveaux **9**, **10** et **11**, puis avec les classes magie, dragon, cavalerie et volante : nom affiché, portée, destination de téléportation, prévisions, animations et résultat du combat.
-4. **Armes** : avoir au moins deux tomes valides, vérifier la possibilité de choisir le tome, et contrôler que les armes non magiques ne passent pas. Si le moteur choisit un tome automatiquement, ce sera une évolution **distincte** du plugin.
-5. **Régression** : un autre emblème doit conserver son attaque originale.
+Le log Ryujinx fourni le **18 novembre 2026** confirme le chargement de l'ancien build jusqu'à l'écran titre : `[engage_attack_evolution] loaded (Engage 2.0.0, Celica level 10)`. Le nouveau SID et le générateur nécessitent **un nouveau build et un test en combat**.
 
-### État de validation
+Scénario : Célica au lien **9** (attaque originale), puis au lien **10** (attaque +). Chercher `[engage_attack_evolution] Celica evolution active: level=10` dans le log. Avec une unité magique et au moins deux tomes utilisables, tester le choix du tome, la prévision, le ciblage, le déplacement, les animations et les dégâts. Vérifier ensuite la classe cavalière/volante/dragon et l'absence d'effet sur un autre emblème.
 
-**Sources écrites, pas encore compilées ni testées dans Ryujinx.** Une PR en brouillon conserve `main` intacte. Les offsets et signatures ont été vérifiés dans Ghidra pour `main_200`. Le `Cargo.lock` de départ reprend les révisions de dépendances du Language Plugin ; son fonctionnement dans ce nouveau dépôt devra être confirmé par la compilation WSL.
+Si `upgrade SID not found` apparaît, le skill + correspondant n'est pas disponible. Si le moteur choisit automatiquement un tome, l'interface de sélection manuelle nécessitera un travail distinct.
 
-En cas d'erreur de compilation ou de crash : arrêter le test et récupérer le log exact avant tout autre changement.
+**La PR reste en brouillon tant que le comportement en jeu n'est pas validé.**
