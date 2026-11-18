@@ -117,6 +117,9 @@ const CELICA_PLUS_SID: &str = "SID_セリカエンゲージ技＋";
 const CELICA_RAGNAROK_IID: &str = "IID_セリカ_ライナロック";
 const RAGNAROK_UNLOCK_LEVEL: i32 = 15;
 
+#[skyline::from_offset(0x01A265E0)]
+fn unit_is_engaging(unit: &Unit, method: OptionalMethod) -> bool;
+
 #[skyline::from_offset(0x01FB04E0)]
 fn set_engage_weapon_god(item: &UnitItem, unit: &Unit, method: OptionalMethod);
 
@@ -190,7 +193,7 @@ fn offer_temporary_ragnarok(skill: &SkillData) {
         return;
     }
     let unit = MapMind::get_unit();
-    if !unit.is_engaging() {
+    if !unsafe { unit_is_engaging(unit, None) } {
         return;
     }
     let Some(god) = celica_god(unit) else {
