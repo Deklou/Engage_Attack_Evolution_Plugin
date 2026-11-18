@@ -29,8 +29,9 @@ if ! grep -Fq 'Sid="SID_セリカエンゲージ技＋"' "$xml"; then
     exit 1
 fi
 
-tmp="$(mktemp --suffix=.xml)"
-trap 'rm -f -- "$tmp"' EXIT
+tmp_dir="$(mktemp -d)"
+tmp="$tmp_dir/Skill.celica-plus.xml"
+trap 'rm -f -- "$tmp"; rmdir -- "$tmp_dir"' EXIT
 python3 tools/generate_celica_plus.py "$xml" "$tmp"
 
 backup_dir="$ryujinx_dir/sdcard/engage/mods/Attack_Evolution/backups"
