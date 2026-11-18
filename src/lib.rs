@@ -21,13 +21,14 @@ struct EvolutionRule {
 }
 
 // Style suffixes are based on the playable Celica rows in Skill.xml.
+// The suffix '＋' is the full-width plus sign used in the modpack (NOT '_Plus').
 // Do not include the enemy-only _闇 variants.
 const CELICA_VARIANTS: &[&str] = &["", "_竜族", "_騎馬", "_飛行", "_魔法"];
 
 const EVOLUTIONS: &[EvolutionRule] = &[EvolutionRule {
     god_gid: "GID_セリカ",
     original_sid: "SID_セリカエンゲージ技",
-    upgraded_sid: "SID_セリカエンゲージ技_Plus",
+    upgraded_sid: "SID_セリカエンゲージ技＋",
     bond_level: 10,
     variants: CELICA_VARIANTS,
 }];
@@ -76,6 +77,8 @@ fn get_engage_attack(
             return vanilla;
         }
 
+        // Do not return the root + skill for a styled unit: that would drop
+        // the class-specific bonuses (magic, flying, cavalry, dragon).
         let target_sid = format!("{}{}", rule.upgraded_sid, suffix);
         if let Some(upgrade) = SkillData::get(&target_sid) {
             if !UPGRADE_REPORTED.swap(true, Ordering::Relaxed) {
@@ -119,6 +122,6 @@ mod tests {
         );
         assert_eq!(variant_suffix("SID_セリカエンゲージ技_闇", rule), None);
         assert_eq!(variant_suffix("SID_マルスエンゲージ技", rule), None);
-        assert_eq!(variant_suffix("SID_セリカエンゲージ技_Plus", rule), None);
+        assert_eq!(variant_suffix("SID_セリカエンゲージ技＋", rule), None);
     }
 }
