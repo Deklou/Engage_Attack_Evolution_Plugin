@@ -34,7 +34,15 @@ Depuis le dossier du plugin, en utilisant le `Skill.xml` **à jour** du modpack 
 python3 tools/generate_celica_plus.py /chemin/vers/Skill.xml /tmp/Skill.celica-plus.xml
 ~~~
 
-Le script refuse d'écraser son entrée ou sa sortie. Pour tester, jeu fermé, **sauvegarder le Skill.xml actif** puis y installer la **copie générée**. Ne pas travailler directement sur `main` du dépôt du modpack.
+Le script refuse d'écraser son entrée ou sa sortie. Pour tester, jeu fermé, **sauvegarder le Skill.xml actif** puis y installer la **copie générée**.
+
+**Option rapide pour ce test**, si le modpack actif dans Ryujinx contient déjà ta ligne « + » :
+
+~~~bash
+bash scripts/install_test_xml.sh
+~~~
+
+Cette commande génère et installe le XML à partir du dossier Ryujinx, avec une sauvegarde datée dans `Attack_Evolution/backups`. **Elle modifie le Skill.xml de ton dossier de mods actif** : ton dépôt local sera donc signalé comme modifié par Git. Elle ne touche pas au dépôt distant `engage_modpack` et ne doit être exécutée qu'avec Ryujinx fermé.
 
 Les **traductions peuvent attendre** : le nom ou la description peut temporairement s'afficher comme une clé MSBT. Les variantes générées réutilisent les clés du skill + existant.
 
