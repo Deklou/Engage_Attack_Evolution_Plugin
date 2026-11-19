@@ -563,10 +563,161 @@ fn human_map_dispose(sequence: *mut u8, method: OptionalMethod) {
     call_original!(sequence, method);
 }
 
+// Bond level-up notifications are a native, sequential list of BasicMenuItem
+// objects. Append one *visual* skill entry after the vanilla level 9 -> 10
+// unlocks (Recover). Never edit GodGrowth or any inherited/sync skill state.
+// main_200: RingListSkillMenu.CreateGodGrowthMenuItem at 0x710242FC80.
+// Called by TelopManager.ProcBondLevelUp.PlayTelop with root=null,
+// maxBondLevel=0 and isRingSelectMenu=false.
+#[unity::class("App", "BasicMenuItem")]
+struct BondPopupMenuItem {}
+
+fn is_celica_plus_bond_popup(
+    gid: &str,
+    from_level: i32,
+    to_level: i32,
+    root_is_null: bool,
+    max_bond_level: i32,
+    is_ring_select_menu: bool,
+) -> bool {
+    gid == "GID_セリカ"
+        && from_level == 9
+        && to_level == 10
+        && root_is_null
+        && max_bond_level == 0
+        && !is_ring_select_menu
+}
+
+// IL2CPP stores this subclass as a nested RingListSkillMenu type. Resolve
+// it rather than creating a plain BasicMenuItem with the wrong vtable.
+fn find_bond_popup_skill_class() -> Option<&'static Il2CppClass> {
+    if let Ok(root) = Il2CppClass::from_name("App", "RingListSkillMenu") {
+        for nested in root.get_nested_types().iter().copied() {
+            if nested.get_name() == "MenuItem_Skill" {
+                return Some(nested);
+            }
+            if nested.get_name() == "MenuItem" {
+                for child in nested.get_nested_types().iter().copied() {
+                    if child.get_name() == "Skill" {
+                        return Some(child);
+                    }
+                }
+            }
+        }
+    }
+    // Different IL2CPP tooling may represent nested names differently.
+    for name in [
+        "RingListSkillMenu/MenuItem_Skill",
+        "RingListSkillMenu/MenuItem/Skill",
+        "RingListSkillMenu.MenuItem_Skill",
+    ] {
+        if let Ok(class) = Il2CppClass::from_name("App", name) {
+            return Some(class);
+        }
+    }
+    None
+}
+
+// Native constructor: (MenuItem_Skill, RingListSkillMenu*, level,
+// SkillData*, isGotSkill, MethodInfo*). Popup's root is null.
+#[skyline::from_offset(0x01D5E340)]
+fn bond_popup_skill_item_ctor(
+    item: &mut BondPopupMenuItem,
+    root: *const u8,
+    level: i32,
+    skill: &SkillData,
+    is_got_skill: bool,
+    method: OptionalMethod,
+);
+
+#[skyline::hook(offset = 0x0242FC80)]
+fn create_bond_popup_growth_items(
+    god_data: *const engage::gamedata::GodData,
+    root: *const u8,
+    from_level: i32,
+    to_level: i32,
+    max_bond_level: i32,
+    out_list: *mut *mut unity::system::List<BondPopupMenuItem>,
+    is_ring_select_menu: bool,
+    method: OptionalMethod,
+) {
+    // The native entries, including Recover, must be built first.
+    call_original!(
+        god_data, root, from_level, to_level, max_bond_level,
+        out_list, is_ring_select_menu, method
+    );
+
+    if god_data.is_null() || out_list.is_null() {
+        return;
+    }
+    let Ok(gid) = (unsafe { &*god_data }).gid.get_string() else {
+        return;
+    };
+    if !is_celica_plus_bond_popup(
+        &gid, from_level, to_level, root.is_null(),
+        max_bond_level, is_ring_select_menu
+    ) {
+        return;
+    }
+    let Some(skill) = SkillData::get(CELICA_PLUS_SID) else {
+        println!(
+            "[engage_attack_evolution] bond popup skipped: {} missing from Skill.xml",
+            CELICA_PLUS_SID
+        );
+        return;
+    };
+    let Some(menu_class) = find_bond_popup_skill_class() else {
+        println!(
+            "[engage_attack_evolution] bond popup skipped: native MenuItem_Skill class not found"
+        );
+        return;
+    };
+    let Ok(item) = il2cpp::instantiate_class::<BondPopupMenuItem>(menu_class) else {
+        println!(
+            "[engage_attack_evolution] bond popup skipped: native skill item allocation failed"
+        );
+        return;
+    };
+    let list_ptr = unsafe { *out_list };
+    if list_ptr.is_null() {
+        println!("[engage_attack_evolution] bond popup skipped: no native unlock list");
+        return;
+    }
+    let list = unsafe { &mut *list_ptr };
+    // Protect against an unexpected ABI/list layout; no popup is safer than
+    // accidentally modifying a list from an unrelated flow.
+    if list.len() > 64 {
+        println!("[engage_attack_evolution] bond popup skipped: unexpected list length");
+        return;
+    }
+    let Ok(add_method) = list.get_class().get_method_from_name("Add", 1) else {
+        println!("[engage_attack_evolution] bond popup skipped: List.Add unavailable");
+        return;
+    };
+    if add_method.method_ptr.is_null() {
+        println!("[engage_attack_evolution] bond popup skipped: List.Add has no entry point");
+        return;
+    }
+
+    // Same Skill menu item and constructor used by the native growth builder.
+    // false matches the vanilla popup's maxBondLevel=0 "already got" flag.
+    unsafe { bond_popup_skill_item_ctor(item, root, 10, skill, false, None) };
+    type NativeListAdd = unsafe extern "C" fn(
+        *mut unity::system::List<BondPopupMenuItem>,
+        *mut BondPopupMenuItem,
+        *const MethodInfo,
+    );
+    let add: NativeListAdd = unsafe { core::mem::transmute(add_method.method_ptr) };
+    unsafe { add(list_ptr, item, add_method as *const MethodInfo) };
+    println!(
+        "[engage_attack_evolution] Celica bond popup added: 9->10 Recover then Warp Ragnarok+"
+    );
+}
+
 #[skyline::main(name = "engage_attack_evolution")]
 pub fn main() {
-    skyline::install_hooks!(get_engage_attack, engage_attack_command_ctor, create_bind_target, trace_put_engage_items, trace_attack_item_mask, trace_attack_menu_created, unit_command_cancel, free_cursor_prepare, human_map_dispose);
-    println!("[engage_attack_evolution] loaded (Engage 2.0.0, Celica level 10; picker post-sync build v9)");
+    skyline::install_hooks!(get_engage_attack, engage_attack_command_ctor, create_bind_target, trace_put_engage_items, trace_attack_item_mask, trace_attack_menu_created, create_bond_popup_growth_items, unit_command_cancel, free_cursor_prepare, human_map_dispose);
+    println!("[engage_attack_evolution] loaded (Engage 2.0.0, Celica level 10; picker post-sync v9; bond popup test v1)");
 }
 
 #[cfg(test)]
@@ -580,6 +731,17 @@ mod tests {
         assert!(should_offer_temporary_ragnarok(14, false));
         assert!(!should_offer_temporary_ragnarok(15, false));
         assert!(!should_offer_temporary_ragnarok(10, true));
+    }
+
+    #[test]
+    fn celica_bond_popup_scope() {
+        assert!(is_celica_plus_bond_popup("GID_セリカ", 9, 10, true, 0, false));
+        assert!(!is_celica_plus_bond_popup("GID_セリカ", 8, 10, true, 0, false));
+        assert!(!is_celica_plus_bond_popup("GID_セリカ", 10, 11, true, 0, false));
+        assert!(!is_celica_plus_bond_popup("GID_マルス", 9, 10, true, 0, false));
+        assert!(!is_celica_plus_bond_popup("GID_セリカ", 9, 10, false, 0, false));
+        assert!(!is_celica_plus_bond_popup("GID_セリカ", 9, 10, true, 20, false));
+        assert!(!is_celica_plus_bond_popup("GID_セリカ", 9, 10, true, 0, true));
     }
 
     #[test]
